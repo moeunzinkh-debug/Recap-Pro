@@ -64,9 +64,32 @@ async function geminiGenerateContent(
   const data: any = await res.json().catch(() => null);
 
   if (!res.ok) {
-    const message =
-      data?.error?.message ||
-      `Gemini API error (HTTP ${res.status})`;
+    const raw =
+      (typeof data?.error?.message === "string" && data.error.message) || "";
+    const status = res.status;
+
+    // Translate the raw Google error into a clear Khmer message so users know
+    // exactly what went wrong (invalid key, unknown model, quota, etc.) instead
+    // of seeing a confusing English string.
+    let message: string;
+    if (/API key not valid|API_KEY_INVALID|invalid.*api.?key/i.test(raw)) {
+      message =
+        "API Key របស់អ្នកមិនត្រឹមត្រូវ ឬអស់សុពលភាព។ សូមចូលទៅ Google AI Studio ដើម្បីយក Key ថ្មី រួចបញ្ចូលម្តងទៀត។";
+    } else if (/not found|NOT_FOUND|does not exist/i.test(raw)) {
+      message =
+        "រកមិនឃើញម៉ូដែល Gemini ដែលបានជ្រើសរើស។ សូមជ្រើសរើសម៉ូដែលផ្សេងទៀតក្នុងទំព័របង្កើត។";
+    } else if (/permission|PERMISSION_DENIED|not authorized|403/i.test(raw)) {
+      message =
+        "API Key នេះមិនមានសិទ្ធិប្រើប្រាស់ម៉ូដែលនេះទេ។ សូមពិនិត្យការកំណត់ Key របស់អ្នក។";
+    } else if (
+      status === 429 ||
+      /quota|RESOURCE_EXHAUSTED|rate limit/i.test(raw)
+    ) {
+      message =
+        "បានដល់កំរិតកំណត់នៃការប្រើប្រាស់ API។ សូមរង់ចាំបន្តិច ឬពិនិត្យកំរិតកំណត់របស់ Key។";
+    } else {
+      message = raw || `Gemini API error (HTTP ${status})`;
+    }
     throw new Error(message);
   }
 
@@ -96,10 +119,15 @@ export async function testGeminiApiKey(
     }
     return { ok: false, message: "មិនទទួលបានចម្លើយពី Google Gemini" };
   } catch (err: any) {
-    return {
-      ok: false,
-      message: err?.message || "Key មិនត្រឹមត្រូវ ឬអស់សុពលភាព",
-    };
+    const msg = err?.message || "";
+    let message: string;
+    if (/fetch failed|network|ECONN|ENOTFOUND|timed? ?out/i.test(msg)) {
+      message =
+        "មិនអាចតភ្ជាប់ទៅកាន់ Google Gemini បានទេ។ សូមពិនិត្យការតភ្ជាប់អ៊ីនធឺណិត ឬព្យាយាមម្តងទៀត។";
+    } else {
+      message = msg || "Key មិនត្រឹមត្រូវ ឬអស់សុពលភាព";
+    }
+    return { ok: false, message };
   }
 }
 
@@ -135,10 +163,6 @@ export async function generateRecapWithFrames(opts: {
     contents: [{ role: "user", parts }],
     systemInstruction:
       "You are an expert anime and movie recap content creator who writes fluent, cinematic, entertaining, and high-impact recap narration scripts in Khmer language.",
-    generationConfig: {
-      temperature: 0.7,
-      topP: 0.95,
-    },
   });
 
   if (!text) {

@@ -94,7 +94,7 @@ npm run deploy
 
 - **Workers Free plan**: CPU 10 ms/request — សម្រាប់វីដេអូធំៗ (frames ច្រើន) អាចមិនគ្រប់។ ប្រើ **Workers Paid ($5/ខែ)** នឹងមាន CPU 30s — អាចបន្ថែម `"limits": { "cpu_ms": 300000 }` ក្នុង `wrangler.jsonc`។ កុំកំណត់ `limits.cpu_ms` ពេលប្រើ Free plan ព្រោះ deploy នឹងបរាជ័យជាមួយកំហុស 100328។
 - Gemini generation ភាគច្រើនជាការរង់ចាំ network I/O — មិនចំណាយ CPU ច្រើនទេ។
-- បើ generation ត្រូវបានកាត់ផ្តាច់ដោយ runtime សូមសាកល្បងវីដេអូខ្លីជាង ឬម៉ូដែលលឿនជាង (ឧ. `gemini-3.1-flash` / `gemini-3.6-flash` / `gemini-3.7-flash`)។
+- បើ generation ត្រូវបានកាត់ផ្តាច់ដោយ runtime សូមសាកល្បងវីដេអូខ្លីជាង ឬម៉ូដែលលឿនជាង (ឧ. `gemini-3.1-flash-lite` / `gemini-3.6-flash` / `gemini-3.7-flash`)។
 
 ---
 
