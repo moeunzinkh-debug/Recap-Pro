@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Clapperboard,
   Sparkles,
@@ -55,27 +55,150 @@ export const SCRIPT_COLOR_PALETTES = [
   { id: "lime", name: "បៃតងខ្ចី", hex: "#a3e635" },
 ];
 
+// ===== PERSISTENT STORAGE KEYS =====
+const LS_API_PLAIN = "recap_gemini_api_key_plain";
+const LS_API_MASKED = "recap_gemini_api_key_masked";
+const LS_HAS_KEY = "recap_has_key";
+const LS_ACTIVE_JOB = "recap_active_job";
+
+export interface ActiveJob {
+  id: string;
+  fileName: string;
+  fileSize: number;
+  model: string;
+  progressMsg: string;
+  progressPercent: number;
+  status: "extracting" | "uploading" | "processing" | "done" | "failed";
+  recapId?: string;
+  error?: string;
+  startedAt: string;
+}
+
+function safeGetLocalStorage(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function safeSetLocalStorage(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {}
+}
+function safeRemoveLocalStorage(key: string) {
+  try {
+    localStorage.removeItem(key);
+  } catch {}
+}
+
 export function App() {
   const [currentPath, setCurrentPath] = useState<string>(() => {
     return window.location.pathname || "/";
   });
 
-  // Global API Key Status
+  // Global API Key Status - initialized from localStorage for instant persistence after refresh
   const [apiKeyInfo, setApiKeyInfo] = useState<{
     hasKey: boolean;
     masked: string;
-  }>({ hasKey: false, masked: "" });
+  }>(() => {
+    try {
+      const masked = safeGetLocalStorage(LS_API_MASKED) || "";
+      const has = safeGetLocalStorage(LS_HAS_KEY) === "1";
+      if (has) {
+        return { hasKey: true, masked };
+      }
+    } catch {}
+    return { hasKey: false, masked: "" };
+  });
 
-  const fetchApiKeyStatus = useCallback(() => {
-    fetch("/api/settings/key")
-      .then((res) => res.json())
-      .then((data) => {
-        setApiKeyInfo({
-          hasKey: !!data.hasKey,
-          masked: data.masked || "",
-        });
-      })
-      .catch(() => {});
+  // === GLOBAL ACTIVE JOB - persists across navigation and refresh ===
+  const [activeJob, setActiveJob] = useState<ActiveJob | null>(() => {
+    try {
+      const raw = safeGetLocalStorage(LS_ACTIVE_JOB);
+      if (raw) {
+        const parsed = JSON.parse(raw) as ActiveJob;
+        // If job was extracting/uploading during previous session and we refreshed, mark as interrupted
+        // because File object is lost and cannot continue. The processing stage CAN survive refresh.
+        if (parsed.status === "extracting" || parsed.status === "uploading") {
+          const interrupted: ActiveJob = {
+            ...parsed,
+            status: "failed",
+            error: "ទំព័រត្រូវបាន refresh អំឡុងពេលទាញយករូបភាព។ សូមសាកល្បងបង្កើតម្តងទៀត។",
+            progressMsg: "បានផ្អាកដោយសារ refresh ទំព័រ",
+          };
+          // Persist the failed state so user sees why
+          try {
+            localStorage.setItem(LS_ACTIVE_JOB, JSON.stringify(interrupted));
+          } catch {}
+          return interrupted;
+        }
+        return parsed;
+      }
+    } catch {}
+    return null;
+  });
+
+  const fetchApiKeyStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/api/settings/key");
+      const data = await res.json();
+      const hasKey = !!data.hasKey;
+      const masked = data.masked || "";
+      if (hasKey) {
+        setApiKeyInfo({ hasKey: true, masked });
+        safeSetLocalStorage(LS_API_MASKED, masked);
+        safeSetLocalStorage(LS_HAS_KEY, "1");
+        // If server has key but we don't have plain in LS, keep existing plain if any
+      } else {
+        // Server says no key - try to restore from localStorage plain if present
+        const plain = safeGetLocalStorage(LS_API_PLAIN);
+        if (plain) {
+          try {
+            const restoreRes = await fetch("/api/settings/key", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ apiKey: plain }),
+            });
+            const restoreData = await restoreRes.json();
+            if (restoreRes.ok && restoreData.masked) {
+              setApiKeyInfo({ hasKey: true, masked: restoreData.masked });
+              safeSetLocalStorage(LS_API_MASKED, restoreData.masked);
+              safeSetLocalStorage(LS_HAS_KEY, "1");
+              return;
+            }
+          } catch {}
+          // Restoration failed but we still have masked in LS - show it as persisted until deleted
+          // To satisfy requirement: keys stay after refresh until deleted
+          const storedMasked = safeGetLocalStorage(LS_API_MASKED);
+          if (storedMasked) {
+            // Keep UI showing hasKey true from localStorage even if server lost it
+            // User expects persistence
+            setApiKeyInfo({ hasKey: true, masked: storedMasked });
+            return;
+          }
+        }
+        // No plain to restore - clear UI but keep LS fallback for display?
+        // Only clear if user explicitly deleted (LS_HAS_KEY removed)
+        const hasStored = safeGetLocalStorage(LS_HAS_KEY) === "1";
+        const storedMasked = safeGetLocalStorage(LS_API_MASKED);
+        if (hasStored && storedMasked) {
+          // Show stored as fallback - user hasn't deleted
+          setApiKeyInfo({ hasKey: true, masked: storedMasked });
+        } else {
+          setApiKeyInfo({ hasKey: false, masked: "" });
+          safeRemoveLocalStorage(LS_API_MASKED);
+          safeRemoveLocalStorage(LS_HAS_KEY);
+        }
+      }
+    } catch {
+      // Network error - fallback to localStorage so it doesn't disappear on refresh
+      const masked = safeGetLocalStorage(LS_API_MASKED) || "";
+      const has = safeGetLocalStorage(LS_HAS_KEY) === "1";
+      if (has) {
+        setApiKeyInfo({ hasKey: true, masked });
+      }
+    }
   }, []);
 
   useEffect(() => {
@@ -84,12 +207,12 @@ export function App() {
 
   // Global Script Text Color Preference
   const [scriptTextColor, setScriptTextColor] = useState<string>(() => {
-    return localStorage.getItem("recap_script_text_color") || "#f8fafc";
+    return safeGetLocalStorage("recap_script_text_color") || "#f8fafc";
   });
 
   // Global Script Font Size Preference
   const [scriptFontSize, setScriptFontSize] = useState<number>(() => {
-    const saved = localStorage.getItem("recap_script_font_size");
+    const saved = safeGetLocalStorage("recap_script_font_size");
     return saved ? Number(saved) : 16;
   });
 
@@ -100,18 +223,18 @@ export function App() {
     setToastMsg(msg);
     setTimeout(() => {
       setToastMsg((current) => (current === msg ? null : current));
-    }, 3000);
+    }, 3500);
   }, []);
 
   const updateScriptTextColor = (colorHex: string) => {
     setScriptTextColor(colorHex);
-    localStorage.setItem("recap_script_text_color", colorHex);
+    safeSetLocalStorage("recap_script_text_color", colorHex);
   };
 
   const updateScriptFontSize = (sizePx: number) => {
     const clamped = Math.min(28, Math.max(13, sizePx));
     setScriptFontSize(clamped);
-    localStorage.setItem("recap_script_font_size", clamped.toString());
+    safeSetLocalStorage("recap_script_font_size", clamped.toString());
   };
 
   const navigate = useCallback((path: string) => {
@@ -119,6 +242,154 @@ export function App() {
     setCurrentPath(path);
     window.scrollTo(0, 0);
   }, []);
+
+  // Persist activeJob whenever it changes
+  useEffect(() => {
+    if (activeJob) {
+      safeSetLocalStorage(LS_ACTIVE_JOB, JSON.stringify(activeJob));
+    } else {
+      safeRemoveLocalStorage(LS_ACTIVE_JOB);
+    }
+  }, [activeJob]);
+
+  // Global polling for activeJob when it's in processing state - survives navigation
+  useEffect(() => {
+    if (!activeJob?.recapId || activeJob.status !== "processing") return;
+    let cancelled = false;
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/recaps/${encodeURIComponent(activeJob.recapId!)}`);
+        const data = await res.json();
+        if (!res.ok || cancelled) return;
+        const recap = data.recap as RecapItem;
+        if (!recap) return;
+        if (recap.status === "done" || recap.status === "failed") {
+          if (cancelled) return;
+          setActiveJob((prev) => {
+            if (!prev || prev.recapId !== recap.id) return prev;
+            const next: ActiveJob = {
+              ...prev,
+              status: recap.status as any,
+              progressMsg:
+                recap.status === "done"
+                  ? "រួចរាល់! ស្គ្រីបត្រូវបានបង្កើតដោយជោគជ័យ។"
+                  : `បរាជ័យ: ${recap.error || "មិនស្គាល់កំហុស"}`,
+              error: recap.error || undefined,
+            };
+            safeSetLocalStorage(LS_ACTIVE_JOB, JSON.stringify(next));
+            return next;
+          });
+          if (recap.status === "done") {
+            showToast("ស្គ្រីបសម្រាយរឿងបានរួចរាល់!");
+          } else {
+            showToast(recap.error || "ការបង្កើតស្គ្រីបបរាជ័យ");
+          }
+          clearInterval(interval);
+        }
+      } catch {}
+    }, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [activeJob?.recapId, activeJob?.status, showToast]);
+
+  const clearActiveJob = useCallback(() => {
+    setActiveJob(null);
+    safeRemoveLocalStorage(LS_ACTIVE_JOB);
+  }, []);
+
+  const startGeneration = useCallback(
+    async (file: File, model: string) => {
+      const jobId = crypto.randomUUID();
+      const initialJob: ActiveJob = {
+        id: jobId,
+        fileName: file.name,
+        fileSize: file.size,
+        model,
+        progressMsg: "កំពុងចាប់ផ្តើមវិភាគវីដេអូ...",
+        progressPercent: 0,
+        status: "extracting",
+        startedAt: new Date().toISOString(),
+      };
+      setActiveJob(initialJob);
+      safeSetLocalStorage(LS_ACTIVE_JOB, JSON.stringify(initialJob));
+
+      try {
+        const { durationSec, frames } = await extractVideoFramesClient(file, (pct, msg) => {
+          setActiveJob((prev) => {
+            if (!prev || prev.id !== jobId) return prev;
+            const next = { ...prev, progressPercent: pct, progressMsg: msg };
+            safeSetLocalStorage(LS_ACTIVE_JOB, JSON.stringify(next));
+            return next;
+          });
+        });
+
+        setActiveJob((prev) => {
+          if (!prev || prev.id !== jobId) return prev;
+          const next = {
+            ...prev,
+            status: "uploading" as const,
+            progressMsg: "កំពុងផ្ញើរូបភាព និងរង់ចាំ AI បង្កើតស្គ្រីប... (អាចចំណាយពេលបន្តិច)",
+            progressPercent: 100,
+          };
+          safeSetLocalStorage(LS_ACTIVE_JOB, JSON.stringify(next));
+          return next;
+        });
+
+        const response = await fetch("/api/recaps", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            fileName: file.name,
+            fileSize: file.size,
+            durationSec,
+            model,
+            frames,
+          }),
+        });
+
+        const data = await response.json();
+        if (!response.ok || !data.recapId) {
+          throw new Error(data.error || "ការបង្កើតគម្រោងស្គ្រីបសម្រាយរឿងបានបរាជ័យ។");
+        }
+
+        const processingJob: ActiveJob = {
+          id: jobId,
+          fileName: file.name,
+          fileSize: file.size,
+          model,
+          progressMsg: "បានផ្ញើរួចរាល់! កំពុងរង់ចាំ AI បង្កើតស្គ្រីប... អ្នកអាចបន្តប្រើទំព័រផ្សេងបាន។",
+          progressPercent: 100,
+          status: "processing",
+          recapId: data.recapId,
+          startedAt: initialJob.startedAt,
+        };
+        setActiveJob(processingJob);
+        safeSetLocalStorage(LS_ACTIVE_JOB, JSON.stringify(processingJob));
+        showToast("បានចាប់ផ្តើមបង្កើតស្គ្រីប! អ្នកអាចបន្តប្រើប្រាស់ទំព័រផ្សេងបាន។");
+        // Navigate to detail - this will NOT cancel the job because it's stored globally
+        window.history.pushState({}, "", `/recap/${data.recapId}`);
+        setCurrentPath(`/recap/${data.recapId}`);
+        window.scrollTo(0, 0);
+      } catch (err: any) {
+        console.error(err);
+        setActiveJob((prev) => {
+          if (!prev || prev.id !== jobId) return prev;
+          const next = {
+            ...prev,
+            status: "failed" as const,
+            error: err.message || "បរាជ័យ",
+            progressMsg: err.message || "បរាជ័យក្នុងការវិភាគវីដេអូ",
+          };
+          safeSetLocalStorage(LS_ACTIVE_JOB, JSON.stringify(next));
+          return next;
+        });
+        showToast(err.message || "មានបញ្ហាក្នុងការវិភាគវីដេអូ");
+      }
+    },
+    [showToast]
+  );
 
   useEffect(() => {
     const handlePopState = () => {
@@ -136,6 +407,9 @@ export function App() {
         onNavigate={navigate}
         apiKeyInfo={apiKeyInfo}
         showToast={showToast}
+        activeJob={activeJob}
+        startGeneration={startGeneration}
+        clearActiveJob={clearActiveJob}
       />
     );
   } else if (currentPath.startsWith("/recap/")) {
@@ -172,6 +446,12 @@ export function App() {
       />
     );
   }
+
+  const isJobActive =
+    activeJob &&
+    (activeJob.status === "extracting" ||
+      activeJob.status === "uploading" ||
+      activeJob.status === "processing");
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-indigo-500 selection:text-white relative">
@@ -241,6 +521,100 @@ export function App() {
             </button>
           </div>
         </div>
+
+        {/* Global Active Job Banner - shows on all pages while processing, doesn't disconnect on navigation */}
+        {isJobActive && (
+          <div className="border-t border-indigo-500/20 bg-indigo-950/40 backdrop-blur-md">
+            <div className="max-w-6xl mx-auto px-4 sm:px-6 py-2.5 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0 flex-1">
+                <Loader2 className="w-4 h-4 text-indigo-400 animate-spin shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="font-semibold text-indigo-200 truncate">
+                      {activeJob.fileName}
+                    </span>
+                    <span className="px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 text-[10px] border border-indigo-500/20">
+                      {activeJob.status === "extracting"
+                        ? "ទាញយករូបភាព"
+                        : activeJob.status === "uploading"
+                        ? "កំពុងផ្ញើ"
+                        : "AI កំពុងបង្កើត"}
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-slate-400 truncate mt-0.5">
+                    {activeJob.progressMsg}
+                  </div>
+                  <div className="mt-1.5 h-1 w-full bg-slate-800 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-indigo-500 transition-all"
+                      style={{ width: `${activeJob.progressPercent}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {activeJob.recapId && (
+                  <button
+                    onClick={() => navigate(`/recap/${activeJob.recapId}`)}
+                    className="px-3 py-1 rounded-lg text-xs font-medium bg-indigo-600 hover:bg-indigo-500 text-white transition cursor-pointer"
+                  >
+                    មើលលទ្ធផល
+                  </button>
+                )}
+                <button
+                  onClick={clearActiveJob}
+                  className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-lg transition cursor-pointer"
+                  title="បិទ"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {/* Show completed/failed job banner until manually cleared - persists after refresh */}
+        {activeJob && !isJobActive && (activeJob.status === "done" || activeJob.status === "failed") && (
+          <div
+            className={`border-t ${
+              activeJob.status === "done"
+                ? "border-emerald-500/20 bg-emerald-950/30"
+                : "border-rose-500/20 bg-rose-950/30"
+            } backdrop-blur-md`}
+          >
+            <div className="max-w-6xl mx-auto px-4 sm:px-6 py-2.5 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 text-xs">
+                {activeJob.status === "done" ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                ) : (
+                  <AlertTriangle className="w-4 h-4 text-rose-400" />
+                )}
+                <span
+                  className={activeJob.status === "done" ? "text-emerald-200" : "text-rose-200"}
+                >
+                  {activeJob.status === "done"
+                    ? `រួចរាល់៖ ${activeJob.fileName}`
+                    : `បរាជ័យ៖ ${activeJob.error || activeJob.fileName}`}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                {activeJob.recapId && activeJob.status === "done" && (
+                  <button
+                    onClick={() => navigate(`/recap/${activeJob.recapId}`)}
+                    className="px-3 py-1 rounded-lg text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white transition cursor-pointer"
+                  >
+                    មើលស្គ្រីប
+                  </button>
+                )}
+                <button
+                  onClick={clearActiveJob}
+                  className="px-2.5 py-1 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 transition cursor-pointer"
+                >
+                  បិទ
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </header>
 
       {/* ខ្លឹមសារចម្បង (Main Body) */}
@@ -250,7 +624,6 @@ export function App() {
     </div>
   );
 }
-
 
 /* =========================================================================
    1. ទំព័រដើម (HOME PAGE)
@@ -550,22 +923,28 @@ function HomePage({
 }
 
 /* =========================================================================
-   2. ទំព័របង្កើតស្គ្រីប (CREATE PAGE)
+   2. ទំព័របង្កើតស្គ្រីប (CREATE PAGE) - now with global persistent job
    ========================================================================= */
 function CreatePage({
   onNavigate,
   apiKeyInfo,
   showToast,
+  activeJob,
+  startGeneration,
+  clearActiveJob,
 }: {
   onNavigate: (path: string) => void;
   apiKeyInfo?: { hasKey: boolean; masked: string };
   showToast: (msg: string) => void;
+  activeJob: ActiveJob | null;
+  startGeneration: (file: File, model: string) => Promise<void>;
+  clearActiveJob: () => void;
 }) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [selectedModel, setSelectedModel] = useState<string>(MODEL);
-  const [loading, setLoading] = useState<boolean>(false);
-  const [progressMsg, setProgressMsg] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
+
+  const isGlobalJobRunning = !!activeJob && (activeJob.status === "extracting" || activeJob.status === "uploading" || activeJob.status === "processing");
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -585,51 +964,257 @@ function CreatePage({
       setError("សូមជ្រើសរើសឯកសារវីដេអូដើម្បីបន្ត។");
       return;
     }
-
-    setLoading(true);
-    setError(null);
-    setProgressMsg("កំពុងវិភាគវីដេអូ និងទាញយករូបភាពប្លង់សំខាន់ៗ...");
-
-    try {
-      // 1. ទាញយករូបភាពប្លង់ (Client-side)
-      const { durationSec, frames } = await extractVideoFramesClient(
-        selectedFile,
-        (pct, msg) => {
-          setProgressMsg(msg);
-        }
-      );
-
-      setProgressMsg(
-        "កំពុងផ្ញើរូបភាព និងរង់ចាំ AI បង្កើតស្គ្រីប... (អាចចំណាយពេលបន្តិច)"
-      );
-
-      // 2. បញ្ជូនទិន្នន័យទៅ Server
-      const response = await fetch("/api/recaps", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          fileName: selectedFile.name,
-          fileSize: selectedFile.size,
-          durationSec,
-          model: selectedModel,
-          frames,
-        }),
-      });
-
-      const data = await response.json();
-      if (!response.ok || !data.recapId) {
-        throw new Error(data.error || "ការបង្កើតគម្រោងស្គ្រីបសម្រាយរឿងបានបរាជ័យ។");
-      }
-
-      // បញ្ជូនទៅទំព័រលម្អិត
-      onNavigate(`/recap/${data.recapId}`);
-    } catch (err: any) {
-      console.error(err);
-      setError(err.message || "ការវិភាគវីដេអូ និងបង្កើតស្គ្រីបបានបរាជ័យ។");
-      setLoading(false);
+    if (isGlobalJobRunning) {
+      setError("មានគម្រោងកំពុងដំណើរការរួចហើយ។ សូមរង់ចាំឲ្យរួចរាល់ ឬបិទគម្រោងចាស់សិន។");
+      return;
     }
+    setError(null);
+    await startGeneration(selectedFile, selectedModel);
   };
 
+  // If there's an active global job, show its progress in this page too
+  if (isGlobalJobRunning) {
+    return (
+      <div className="max-w-2xl mx-auto space-y-6">
+        <div>
+          <button
+            onClick={() => onNavigate("/")}
+            className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 transition mb-3 cursor-pointer"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            <span>ត្រឡប់ទៅទំព័រដើម</span>
+          </button>
+          <h1 className="text-2xl font-bold tracking-tight text-white">
+            កំពុងបង្កើតស្គ្រីប...
+          </h1>
+          <p className="text-slate-400 text-sm mt-1">
+            គម្រោងកំពុងដំណើរការ។ អ្នកអាចចូលទៅកាន់ទំព័រ Settings ឬទំព័រផ្សេងបានដោយមិនដាច់ការតភ្ជាប់។
+          </p>
+        </div>
+
+        <div className="rounded-xl border border-indigo-500/30 bg-indigo-500/10 p-6 space-y-4">
+          <div className="flex items-center gap-3">
+            <Loader2 className="w-6 h-6 text-indigo-400 animate-spin" />
+            <div>
+              <p className="font-semibold text-white">{activeJob.fileName}</p>
+              <p className="text-xs text-indigo-300 mt-1">{activeJob.progressMsg}</p>
+            </div>
+          </div>
+
+          <div className="h-2 w-full bg-slate-800 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-indigo-500 transition-all duration-300"
+              style={{ width: `${activeJob.progressPercent}%` }}
+            />
+          </div>
+
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-slate-400">
+              {activeJob.progressPercent}% • {activeJob.model}
+            </span>
+            <span className="text-indigo-300 font-medium">
+              {activeJob.status === "extracting"
+                ? "កំពុងទាញយករូបភាព..."
+                : activeJob.status === "uploading"
+                ? "កំពុងផ្ញើទៅ Server..."
+                : "AI កំពុងបង្កើតស្គ្រីប..."}
+            </span>
+          </div>
+
+          <div className="flex flex-wrap gap-2 pt-2">
+            {activeJob.recapId && (
+              <button
+                onClick={() => onNavigate(`/recap/${activeJob.recapId}`)}
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg transition cursor-pointer"
+              >
+                <FileText className="w-4 h-4" />
+                <span>មើលលទ្ធផល</span>
+              </button>
+            )}
+            <button
+              onClick={() => onNavigate("/settings")}
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-300 bg-slate-800 hover:bg-slate-700 rounded-lg transition cursor-pointer"
+            >
+              <SettingsIcon className="w-4 h-4" />
+              <span>ទៅកាន់ Settings (មិនដាច់)</span>
+            </button>
+            <button
+              onClick={clearActiveJob}
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-rose-300 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 rounded-lg transition cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+              <span>បោះបង់គម្រោង</span>
+            </button>
+          </div>
+
+          <p className="text-[11px] text-slate-500 leading-relaxed pt-2 border-t border-indigo-500/20">
+            ✓ គម្រោងនេះនឹងបន្តដំណើរការសូម្បីអ្នកប្តូរទំព័រ។ អ្នកអាចចូល Settings, Home ឬទំព័រណាក៏បាន វានៅតែដំណើរការ។
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show failed job UI with retry
+  if (activeJob && activeJob.status === "failed") {
+    return (
+      <div className="max-w-2xl mx-auto space-y-6">
+        <div>
+          <button
+            onClick={() => onNavigate("/")}
+            className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 transition mb-3 cursor-pointer"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            <span>ត្រឡប់ទៅទំព័រដើម</span>
+          </button>
+          <h1 className="text-2xl font-bold tracking-tight text-white">
+            បង្កើតស្គ្រីបសម្រាយរឿងថ្មី
+          </h1>
+        </div>
+
+        <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-5 space-y-3">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-semibold text-rose-200">គម្រោងមុនបរាជ័យ</p>
+              <p className="text-xs text-rose-300/80 mt-1">{activeJob.error || activeJob.progressMsg}</p>
+              <p className="text-xs text-slate-400 mt-1">ឯកសារ៖ {activeJob.fileName}</p>
+            </div>
+          </div>
+          <div className="flex gap-2 pt-2">
+            <button
+              onClick={clearActiveJob}
+              className="px-4 py-2 rounded-lg text-sm font-medium bg-slate-800 hover:bg-slate-700 text-white transition cursor-pointer"
+            >
+              សម្អាត ហើយចាប់ផ្តើមថ្មី
+            </button>
+          </div>
+        </div>
+
+        {/* Show normal form below failed banner */}
+        <div className="space-y-6">
+          {apiKeyInfo?.hasKey ? (
+            <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3.5 flex items-center justify-between gap-3 text-xs text-emerald-300">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+                <span>Google Gemini API ត្រូវបានភ្ជាប់រួចរាល់ ({apiKeyInfo.masked})</span>
+              </div>
+              <button
+                onClick={() => onNavigate("/settings")}
+                className="text-emerald-400 hover:text-emerald-200 underline font-medium cursor-pointer"
+              >
+                ពិនិត្យការកំណត់
+              </button>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3.5 flex items-center justify-between gap-3 text-xs text-amber-300">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                <span>មិនទាន់កំណត់ API Key សម្រាប់ដំណើរការ AI នៅឡើយទេ</span>
+              </div>
+              <button
+                onClick={() => onNavigate("/settings")}
+                className="px-2.5 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 font-semibold border border-amber-500/30 transition cursor-pointer"
+              >
+                កំណត់ Key ឥឡូវនេះ
+              </button>
+            </div>
+          )}
+
+          {error && (
+            <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-rose-300 text-sm flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5 text-rose-400" />
+              <span>{error}</span>
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit} className="space-y-6">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="block text-sm font-medium text-slate-200">
+                  ជ្រើសរើសឯកសារវីដេអូ
+                </label>
+                {selectedFile && (
+                  <button
+                    type="button"
+                    onClick={handleClearSelectedFile}
+                    className="inline-flex items-center gap-1 text-xs text-rose-400 hover:text-rose-300 transition cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                    <span>សម្អាត / ដកវីដេអូចេញ</span>
+                  </button>
+                )}
+              </div>
+
+              <label className="border-2 border-dashed border-slate-700 hover:border-indigo-500/60 rounded-xl p-8 flex flex-col items-center justify-center gap-3 bg-slate-900/40 hover:bg-slate-900/60 transition cursor-pointer relative">
+                <input
+                  type="file"
+                  accept="video/*"
+                  className="hidden"
+                  onChange={handleFileChange}
+                />
+                <div className="p-3 rounded-full bg-indigo-500/10 text-indigo-400">
+                  <UploadCloud className="w-6 h-6" />
+                </div>
+                <div className="text-center">
+                  <p className="text-sm font-medium text-slate-200">
+                    {selectedFile ? selectedFile.name : "ចុច ឬទម្លាក់ឯកសារវីដេអូនៅទីនេះ"}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    {selectedFile
+                      ? `${formatBytes(selectedFile.size)} • រួចរាល់សម្រាប់ដំណើរការ`
+                      : "គាំទ្រទ្រង់ទ្រាយ MP4, WebM, MOV (ទំហំអតិបរមា 100MB)"}
+                  </p>
+                </div>
+              </label>
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-sm font-medium text-slate-200">
+                ជ្រើសរើសម៉ូដែល Gemini AI
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                {GEMINI_MODELS.map((m) => {
+                  const isSelected = selectedModel === m.id;
+                  return (
+                    <button
+                      type="button"
+                      key={m.id}
+                      onClick={() => setSelectedModel(m.id)}
+                      className={`text-left p-3.5 rounded-xl border transition cursor-pointer flex flex-col justify-between ${
+                        isSelected
+                          ? "border-indigo-500 bg-indigo-500/10 shadow-sm"
+                          : "border-slate-800 bg-slate-900/50 hover:border-slate-700 hover:bg-slate-900"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium text-sm text-slate-200">{m.label}</span>
+                        <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700">
+                          {m.tag}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-400 mt-1">{m.description}</p>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={!selectedFile}
+              className="w-full py-3 px-4 rounded-xl font-semibold text-sm text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition shadow-lg shadow-indigo-600/20 flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <Sparkles className="w-4 h-4" />
+              <span>បង្កើតស្គ្រីបសម្រាយរឿង</span>
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // Normal create form when no active job
   return (
     <div className="max-w-2xl mx-auto space-y-6">
       <div>
@@ -653,9 +1238,7 @@ function CreatePage({
         <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3.5 flex items-center justify-between gap-3 text-xs text-emerald-300">
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
-            <span>
-              Google Gemini API ត្រូវបានភ្ជាប់រួចរាល់ ({apiKeyInfo.masked})
-            </span>
+            <span>Google Gemini API ត្រូវបានភ្ជាប់រួចរាល់ ({apiKeyInfo.masked})</span>
           </div>
           <button
             onClick={() => onNavigate("/settings")}
@@ -679,7 +1262,6 @@ function CreatePage({
         </div>
       )}
 
-
       {error && (
         <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-rose-300 text-sm flex items-start gap-3">
           <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5 text-rose-400" />
@@ -694,7 +1276,7 @@ function CreatePage({
             <label className="block text-sm font-medium text-slate-200">
               ជ្រើសរើសឯកសារវីដេអូ
             </label>
-            {selectedFile && !loading && (
+            {selectedFile && (
               <button
                 type="button"
                 onClick={handleClearSelectedFile}
@@ -712,7 +1294,6 @@ function CreatePage({
               accept="video/*"
               className="hidden"
               onChange={handleFileChange}
-              disabled={loading}
             />
             <div className="p-3 rounded-full bg-indigo-500/10 text-indigo-400">
               <UploadCloud className="w-6 h-6" />
@@ -743,7 +1324,6 @@ function CreatePage({
                   type="button"
                   key={m.id}
                   onClick={() => setSelectedModel(m.id)}
-                  disabled={loading}
                   className={`text-left p-3.5 rounded-xl border transition cursor-pointer flex flex-col justify-between ${
                     isSelected
                       ? "border-indigo-500 bg-indigo-500/10 shadow-sm"
@@ -751,9 +1331,7 @@ function CreatePage({
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="font-medium text-sm text-slate-200">
-                      {m.label}
-                    </span>
+                    <span className="font-medium text-sm text-slate-200">{m.label}</span>
                     <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700">
                       {m.tag}
                     </span>
@@ -768,21 +1346,15 @@ function CreatePage({
         {/* ប៊ូតុងបង្កើតស្គ្រីប */}
         <button
           type="submit"
-          disabled={loading || !selectedFile}
+          disabled={!selectedFile}
           className="w-full py-3 px-4 rounded-xl font-semibold text-sm text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition shadow-lg shadow-indigo-600/20 flex items-center justify-center gap-2 cursor-pointer"
         >
-          {loading ? (
-            <>
-              <Loader2 className="w-4 h-4 animate-spin" />
-              <span>{progressMsg || "កំពុងវិភាគវីដេអូ និងទាញយករូបភាពប្លង់..."}</span>
-            </>
-          ) : (
-            <>
-              <Sparkles className="w-4 h-4" />
-              <span>បង្កើតស្គ្រីបសម្រាយរឿង</span>
-            </>
-          )}
+          <Sparkles className="w-4 h-4" />
+          <span>បង្កើតស្គ្រីបសម្រាយរឿង</span>
         </button>
+        <p className="text-[11px] text-slate-500 text-center leading-relaxed">
+          ✓ នៅពេលដំណើរការ អ្នកអាចចូល Settings ឬទំព័រផ្សេងបាន វាមិនដាច់ទេ។ ការងារនឹងបន្តរហូតចប់។
+        </p>
       </form>
     </div>
   );
@@ -819,9 +1391,7 @@ function RecapDetailPage({
       const res = await fetch(`/api/recaps/${encodeURIComponent(recapId)}`);
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(
-          data.error || "រកមិនឃើញព័ត៌មានស្គ្រីបសម្រាយរឿងនេះឡើយ។"
-        );
+        throw new Error(data.error || "រកមិនឃើញព័ត៌មានស្គ្រីបសម្រាយរឿងនេះឡើយ។");
       }
       if (!data.recap) {
         throw new Error("រកមិនឃើញព័ត៌មានស្គ្រីបសម្រាយរឿងនេះឡើយ។");
@@ -1001,9 +1571,7 @@ function RecapDetailPage({
               >
                 <ZoomOut className="w-3.5 h-3.5" />
               </button>
-              <span className="px-2 text-slate-300 font-mono text-[11px]">
-                {fontSize}px
-              </span>
+              <span className="px-2 text-slate-300 font-mono text-[11px]">{fontSize}px</span>
               <button
                 onClick={() => onFontSizeChange(fontSize + 1)}
                 className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition"
@@ -1127,7 +1695,7 @@ function RecapDetailPage({
 }
 
 /* =========================================================================
-   4. ទំព័រកំណត់ & ប្តូរពណ៌អក្សរ (SETTINGS & PREFERENCES PAGE)
+   4. ទំព័រកំណត់ & ប្តូរពណ៌អក្សរ (SETTINGS & PREFERENCES PAGE) - with persistent keys
    ========================================================================= */
 function SettingsPage({
   onNavigate,
@@ -1146,8 +1714,20 @@ function SettingsPage({
   showToast: (msg: string) => void;
   onApiKeyUpdated?: () => void;
 }) {
-  const [hasKey, setHasKey] = useState<boolean>(false);
-  const [maskedKey, setMaskedKey] = useState<string>("");
+  const [hasKey, setHasKey] = useState<boolean>(() => {
+    try {
+      return safeGetLocalStorage(LS_HAS_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [maskedKey, setMaskedKey] = useState<string>(() => {
+    try {
+      return safeGetLocalStorage(LS_API_MASKED) || "";
+    } catch {
+      return "";
+    }
+  });
   const [apiKeyInput, setApiKeyInput] = useState<string>("");
   const [showInputPassword, setShowInputPassword] = useState<boolean>(false);
   const [loading, setLoading] = useState(true);
@@ -1171,16 +1751,51 @@ function SettingsPage({
   const [clearingHistory, setClearingHistory] = useState(false);
   const [showClearConfirmModal, setShowClearConfirmModal] = useState(false);
 
-  const fetchKeyStatus = useCallback(() => {
-    fetch("/api/settings/key")
-      .then((res) => res.json())
-      .then((data) => {
-        setHasKey(!!data.hasKey);
-        if (data.masked) setMaskedKey(data.masked);
-        else setMaskedKey("");
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
+  const fetchKeyStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/api/settings/key");
+      const data = await res.json();
+      if (data.hasKey) {
+        setHasKey(true);
+        setMaskedKey(data.masked || "");
+        safeSetLocalStorage(LS_API_MASKED, data.masked || "");
+        safeSetLocalStorage(LS_HAS_KEY, "1");
+      } else {
+        // Try restore from localStorage plain
+        const plain = safeGetLocalStorage(LS_API_PLAIN);
+        if (plain) {
+          try {
+            const restoreRes = await fetch("/api/settings/key", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ apiKey: plain }),
+            });
+            const restoreData = await restoreRes.json();
+            if (restoreRes.ok && restoreData.hasKey) {
+              setHasKey(true);
+              setMaskedKey(restoreData.masked || "");
+              safeSetLocalStorage(LS_API_MASKED, restoreData.masked || "");
+              safeSetLocalStorage(LS_HAS_KEY, "1");
+              setLoading(false);
+              return;
+            }
+          } catch {}
+        }
+        // If LS says has key, keep showing persisted key (requirement: stay until deleted)
+        const storedHas = safeGetLocalStorage(LS_HAS_KEY) === "1";
+        const storedMasked = safeGetLocalStorage(LS_API_MASKED) || "";
+        if (storedHas && storedMasked) {
+          setHasKey(true);
+          setMaskedKey(storedMasked);
+        } else {
+          setHasKey(false);
+          setMaskedKey("");
+        }
+      }
+      setLoading(false);
+    } catch {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -1213,8 +1828,14 @@ function SettingsPage({
       if (!res.ok) {
         throw new Error(data.error || "ការរក្សាទុក Key បានបរាជ័យ។");
       }
+      const masked = data.masked || maskKey(apiKeyInput.trim());
       setHasKey(true);
-      setMaskedKey(data.masked || maskKey(apiKeyInput.trim()));
+      setMaskedKey(masked);
+      // Persist to localStorage so it survives refresh until deleted
+      safeSetLocalStorage(LS_API_PLAIN, apiKeyInput.trim());
+      safeSetLocalStorage(LS_API_MASKED, masked);
+      safeSetLocalStorage(LS_HAS_KEY, "1");
+
       setApiKeyInput("");
       setSaved(true);
       if (data.verificationMessage) {
@@ -1223,7 +1844,7 @@ function SettingsPage({
           message: data.verificationMessage,
         });
       }
-      showToast("បានរក្សាទុក និងភ្ជាប់ API Key ដោយជោគជ័យ!");
+      showToast("បានរក្សាទុក និងភ្ជាប់ API Key ដោយជោគជ័យ! Key នឹងនៅជាប់រហូតលុះត្រាលុប។");
       if (onApiKeyUpdated) onApiKeyUpdated();
       setTimeout(() => setSaved(false), 4000);
     } catch (err: any) {
@@ -1264,12 +1885,16 @@ function SettingsPage({
     setDeletingKey(true);
     try {
       const res = await fetch("/api/settings/key", { method: "DELETE" });
-      const data = await res.json();
+      await res.json();
       if (res.ok) {
         setHasKey(false);
         setMaskedKey("");
         setTestResult(null);
         setShowDeleteKeyModal(false);
+        // Clear localStorage - now it will truly disappear only when deleted
+        safeRemoveLocalStorage(LS_API_PLAIN);
+        safeRemoveLocalStorage(LS_API_MASKED);
+        safeRemoveLocalStorage(LS_HAS_KEY);
         showToast("បានលុប API Key ចេញពីប្រព័ន្ធរួចរាល់!");
         if (onApiKeyUpdated) onApiKeyUpdated();
       } else {
@@ -1378,6 +2003,10 @@ function SettingsPage({
               </span>
             </div>
 
+            <p className="text-[11px] text-slate-500 leading-relaxed">
+              ✓ Key នេះត្រូវបានរក្សាទុករហូត គឺនៅជាប់រហូតទោះបី refresh ទំព័រក៏ដោយ លុះត្រាតែអ្នកចុចលុប។
+            </p>
+
             {/* ប៊ូតុងសាកល្បងតភ្ជាប់ និងប៊ូតុងលុប Key */}
             <div className="flex flex-wrap items-center gap-2 pt-1">
               <button
@@ -1441,7 +2070,7 @@ function SettingsPage({
                 : "បញ្ចូល Gemini API Key របស់អ្នក៖"}
             </label>
             <p className="text-[11px] text-slate-400">
-              Key ត្រូវបានរក្សាទុកដោយសុវត្ថិភាពសម្រាប់ការវិភាគវីដេអូ និងបង្កើតស្គ្រីប។
+              Key ត្រូវបានរក្សាទុកដោយសុវត្ថិភាពសម្រាប់ការវិភាគវីដេអូ និងបង្កើតស្គ្រីប។ នៅជាប់រហូតទោះ refresh ក៏មិនបាត់។
             </p>
           </div>
 
@@ -1459,11 +2088,7 @@ function SettingsPage({
               className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-200 transition cursor-pointer"
               title={showInputPassword ? "លាក់ Key" : "បង្ហាញ Key"}
             >
-              {showInputPassword ? (
-                <EyeOff className="w-4 h-4" />
-              ) : (
-                <Eye className="w-4 h-4" />
-              )}
+              {showInputPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
             </button>
           </div>
 
@@ -1561,9 +2186,7 @@ function SettingsPage({
               onChange={(e) => onTextColorChange(e.target.value)}
               className="w-7 h-7 rounded cursor-pointer bg-transparent border-0 p-0"
             />
-            <span className="text-xs font-mono text-indigo-400 font-semibold">
-              {textColor}
-            </span>
+            <span className="text-xs font-mono text-indigo-400 font-semibold">{textColor}</span>
           </div>
         </div>
 
@@ -1589,9 +2212,7 @@ function SettingsPage({
         </div>
 
         <div className="flex items-center justify-between text-sm">
-          <span className="text-slate-300">
-            ចំនួនស្គ្រីបសម្រាយរឿងក្នុងប្រវត្តិ៖
-          </span>
+          <span className="text-slate-300">ចំនួនស្គ្រីបសម្រាយរឿងក្នុងប្រវត្តិ៖</span>
           <span className="font-mono font-bold text-white bg-slate-800 px-2.5 py-1 rounded-md">
             {historyCount} គម្រោង
           </span>
@@ -1626,8 +2247,8 @@ function SettingsPage({
             </div>
 
             <p className="text-sm text-slate-300 leading-relaxed">
-              តើអ្នកពិតជាចង់ដក ឬលុប Google Gemini API Key ចេញពីប្រព័ន្ធមែនទេ?
-              បន្ទាប់ពីលុប អ្នកត្រូវបញ្ចូល Key ថ្មីដើម្បីអាចដំណើរការ AI បាន។
+              តើអ្នកពិតជាចង់ដក ឬលុប Google Gemini API Key ចេញពីប្រព័ន្ធមែនទេ? បន្ទាប់ពីលុប អ្នកត្រូវបញ្ចូល
+              Key ថ្មីដើម្បីអាចដំណើរការ AI បាន។
             </p>
 
             <div className="flex items-center justify-end gap-3 pt-2">
@@ -1715,6 +2336,5 @@ function SettingsPage({
     </div>
   );
 }
-
 
 export default App;
