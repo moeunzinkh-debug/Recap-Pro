@@ -6,7 +6,7 @@
  * (and Node / browsers) without any polyfills.
  */
 
-import { MODEL, isKnownGeminiModel } from "./constants";
+import { MODEL, normalizeGeminiModel } from "./constants";
 
 const GEMINI_API_BASE =
   "https://generativelanguage.googleapis.com/v1beta/models";
@@ -85,7 +85,7 @@ export async function testGeminiApiKey(
   try {
     const { text } = await geminiGenerateContent({
       apiKey,
-      model: "gemini-2.0-flash",
+      model: MODEL,
       contents: [{ role: "user", parts: [{ text: "Hi" }] }],
     });
     if (typeof text === "string" && text.length > 0) {
@@ -110,8 +110,7 @@ export async function generateRecapWithFrames(opts: {
   prompt: string;
   frames: FramePayload[];
 }): Promise<string> {
-  const selectedModel =
-    opts.model && isKnownGeminiModel(opts.model) ? opts.model : MODEL;
+  const selectedModel = normalizeGeminiModel(opts.model);
 
   const parts: any[] = [];
 

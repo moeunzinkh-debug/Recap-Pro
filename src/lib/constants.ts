@@ -3,7 +3,7 @@ export const MAX_DURATION_SEC = 10 * 60; // 10 minutes
 export const MIN_DURATION_SEC = 3;
 export const MAX_FRAMES = 110;
 export const FRAME_WIDTH = 640;
-export const MODEL = "gemini-2.0-flash";
+export const MODEL = "gemini-3.7-flash";
 
 export interface GeminiModelOption {
   id: string;
@@ -12,53 +12,37 @@ export interface GeminiModelOption {
   description: string;
 }
 
+// Keep the model catalogue deliberately small so the UI and API expose only
+// the currently supported Gemini Flash models.
 export const GEMINI_MODELS: GeminiModelOption[] = [
-  {
-    id: "gemini-3.6-flash",
-    label: "Gemini 3.6 Flash",
-    tag: "ជំនាន់ថ្មី",
-    description: "ម៉ូដែល Multimodal លឿន និងឆ្លាតវៃខ្ពស់",
-  },
   {
     id: "gemini-3.1-flash",
     label: "Gemini 3.1 Flash",
-    tag: "ល្បឿនលឿន",
+    tag: "លឿន និងឆ្លាតវៃ",
     description: "សមត្ថភាពវិភាគ និងគិតស៊ីជម្រៅលឿន",
   },
   {
-    id: "gemini-2.5-flash",
-    label: "Gemini 2.5 Flash",
+    id: "gemini-3.6-flash",
+    label: "Gemini 3.6 Flash",
+    tag: "Multimodal",
+    description: "ម៉ូដែល Multimodal លឿន និងឆ្លាតវៃខ្ពស់",
+  },
+  {
+    id: "gemini-3.7-flash",
+    label: "Gemini 3.7 Flash",
     tag: "ណែនាំ",
-    description: "តុល្យភាពរវាងល្បឿន និងភាពត្រឹមត្រូវខ្ពស់",
-  },
-  {
-    id: "gemini-2.5-flash-lite",
-    label: "Gemini 2.5 Flash-Lite",
-    tag: "លឿនបំផុត",
-    description: "បង្កើតឡើងសម្រាប់កាត់បន្ថយពេលវេលារង់ចាំ",
-  },
-  {
-    id: "gemini-2.0-flash",
-    label: "Gemini 2.0 Flash",
-    tag: "ស្តង់ដារ",
-    description: "ម៉ូដែលដើមមានស្ថិរភាពល្អ",
-  },
-  {
-    id: "gemini-2.5-pro",
-    label: "Gemini 2.5 Pro",
-    tag: "កម្រិតខ្ពស់",
-    description: "វិភាគស៊ីជម្រៅសម្រាប់ដំណើររឿងវីដេអូស្មុគស្មាញ",
-  },
-  {
-    id: "gemini-1.5-flash",
-    label: "Gemini 1.5 Flash",
-    tag: "ជំនាន់មុន",
-    description: "ម៉ូដែលជំនាន់មុនដែលអាចទុកចិត្តបាន",
+    description: "ជំនាន់ថ្មីសម្រាប់ស្គ្រីបសម្រាយរឿងដែលមានគុណភាពខ្ពស់",
   },
 ];
 
 export function isKnownGeminiModel(id: string): boolean {
   return GEMINI_MODELS.some((m) => m.id === id);
+}
+
+export function normalizeGeminiModel(value: unknown): string {
+  return typeof value === "string" && isKnownGeminiModel(value)
+    ? value
+    : MODEL;
 }
 
 export interface AnalyzeProgress {

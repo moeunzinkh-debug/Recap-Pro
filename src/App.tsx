@@ -24,7 +24,7 @@ import {
   ShieldCheck,
   ExternalLink,
 } from "lucide-react";
-import { GEMINI_MODELS, formatBytes } from "./lib/constants";
+import { GEMINI_MODELS, MODEL, formatBytes } from "./lib/constants";
 import { extractVideoFramesClient } from "./lib/clientFrames";
 
 interface RecapItem {
@@ -562,7 +562,7 @@ function CreatePage({
   showToast: (msg: string) => void;
 }) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [selectedModel, setSelectedModel] = useState<string>("gemini-2.0-flash");
+  const [selectedModel, setSelectedModel] = useState<string>(MODEL);
   const [loading, setLoading] = useState<boolean>(false);
   const [progressMsg, setProgressMsg] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
@@ -816,11 +816,16 @@ function RecapDetailPage({
 
   const fetchRecap = useCallback(async () => {
     try {
-      const res = await fetch(`/api/recaps/${recapId}`);
+      const res = await fetch(`/api/recaps/${encodeURIComponent(recapId)}`);
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
+        throw new Error(
+          data.error || "រកមិនឃើញព័ត៌មានស្គ្រីបសម្រាយរឿងនេះឡើយ។"
+        );
+      }
+      if (!data.recap) {
         throw new Error("រកមិនឃើញព័ត៌មានស្គ្រីបសម្រាយរឿងនេះឡើយ។");
       }
-      const data = await res.json();
       setRecap(data.recap);
       setLoading(false);
       return data.recap;
