@@ -599,7 +599,9 @@ function CreatePage({
         }
       );
 
-      setProgressMsg("កំពុងបញ្ជូនរូបភាពទៅប្រព័ន្ធបង្កើតស្គ្រីប AI...");
+      setProgressMsg(
+        "កំពុងផ្ញើរូបភាព និងរង់ចាំ AI បង្កើតស្គ្រីប... (អាចចំណាយពេលបន្តិច)"
+      );
 
       // 2. បញ្ជូនទិន្នន័យទៅ Server
       const response = await fetch("/api/recaps", {
