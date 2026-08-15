@@ -15,6 +15,7 @@
 
 import {
   createStore,
+  createMemoryStore,
   type RecapItem,
   type RecapStore,
   type StoreEnv,
@@ -25,7 +26,12 @@ import {
   testGeminiApiKey,
   type FramePayload,
 } from "./src/lib/gemini";
-import { MAX_FILE_SIZE, MAX_DURATION_SEC } from "./src/lib/constants";
+import {
+  MAX_FILE_SIZE,
+  MAX_DURATION_SEC,
+  MODEL,
+  normalizeGeminiModel,
+} from "./src/lib/constants";
 
 export interface WorkerEnv extends StoreEnv {
   /** Cloudflare Workers Static Assets binding (serves dist/) */
@@ -45,6 +51,18 @@ const STALE_ERROR_MESSAGE =
   "ដំណើរការបង្កើតស្គ្រីបត្រូវបានផ្អាកដោយសារដែនកំណត់ពេលវេលារបស់ Cloudflare Worker។ សូមសាកល្បងម្តងទៀតជាមួយវីដេអូខ្លីជាង ឬម៉ូដែលដែលលឿនជាង។";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+// Keep the no-D1 fallback alive for the lifetime of this Worker isolate. The
+// previous implementation created a fresh MemoryStore for every request, so a
+// recap created by POST /api/recaps disappeared before the detail page could
+// load it and returned “រកមិនឃើញព័ត៌មានស្គ្រីបសម្រាយរឿងនេះឡើយ” (not found).
+let workerMemoryStore: RecapStore | null = null;
+
+function getRequestStore(env: WorkerEnv): RecapStore {
+  if (env.RECAPS_DB) return createStore(env);
+  if (!workerMemoryStore) workerMemoryStore = createMemoryStore(env);
+  return workerMemoryStore;
+}
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -160,9 +178,10 @@ async function handleCreateRecap(
     fileName = "video.mp4",
     fileSize = 0,
     durationSec = 30,
-    model = "gemini-2.0-flash",
+    model: requestedModel = MODEL,
     frames = [],
   } = body ?? {};
+  const model = normalizeGeminiModel(requestedModel);
 
   if (typeof fileSize === "number" && fileSize > MAX_FILE_SIZE) {
     return json(
@@ -245,7 +264,7 @@ async function handleApi(
   path: string,
   storeOverride?: RecapStore
 ): Promise<Response> {
-  const store = storeOverride ?? createStore(env);
+  const store = storeOverride ?? getRequestStore(env);
   const method = (request.method || "GET").toUpperCase();
   const route = path.slice("/api".length) || "/";
 
