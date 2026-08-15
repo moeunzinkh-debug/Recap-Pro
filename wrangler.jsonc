@@ -11,10 +11,9 @@
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*"]
   },
-  // Raise the CPU limit (honored on Workers Paid; free plan stays at 10 ms).
-  // JSON parsing of large frame payloads and long generations benefit from it.
-  "limits": {
-    "cpu_ms": 300000
-  }
+  // NOTE: No "limits.cpu_ms" here — Cloudflare rejects it on the Workers Free
+  // plan with error 100328 ("CPU limits are not supported for the Free plan").
+  // Free plan stays at 10 ms CPU/request; on Workers Paid you may add:
+  //   "limits": { "cpu_ms": 300000 }
   // `npm run db:create` adds the "d1_databases" binding below automatically.
 }
