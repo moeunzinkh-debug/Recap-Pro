@@ -16,8 +16,8 @@ export interface GeminiModelOption {
 // the currently supported Gemini Flash models.
 export const GEMINI_MODELS: GeminiModelOption[] = [
   {
-    id: "gemini-3.1-flash",
-    label: "Gemini 3.1 Flash",
+    id: "gemini-3.1-flash-lite",
+    label: "Gemini 3.1 Flash-Lite",
     tag: "លឿន និងឆ្លាតវៃ",
     description: "សមត្ថភាពវិភាគ និងគិតស៊ីជម្រៅលឿន",
   },
