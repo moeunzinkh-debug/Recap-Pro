@@ -1,2 +1,2 @@
-export type { Recap, NewRecap, ApiKey, NewApiKey } from "./db/schema";
+export type { RecapItem, ApiKeyItem, RecapStore } from "./lib/store";
 export type { GeminiModelOption, AnalyzeProgress } from "./lib/constants";
